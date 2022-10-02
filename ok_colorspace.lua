@@ -70,27 +70,24 @@ local function min(...)
     return m
 end
 
-local k_1 = 0.206
-local k_2 = 0.03
-local k_3 = (1 + k_1) / (1 + k_2)
-
 ---@param x number
 ---@return number
 local function toe(x)
-    return 0.5 * (k_3 * x - k_1 + sqrt((k_3 * x - k_1) ^ 2 + 4 * k_2 * k_3 * x))
+    local k1 = 0.206
+    local k2 = 0.03
+    local k3 = (1 + k1) / (1 + k2)
+
+    return 0.5 * (k3 * x - k1 + sqrt((k3 * x - k1) ^ 2 + 4 * k2 * k3 * x))
 end
 
 ---@param x number
 ---@return number
 local function toe_inv(x)
-    return (x ^ 2 + k_1 * x) / (k_3 * (x + k_2))
-end
+    local k1 = 0.206
+    local k2 = 0.03
+    local k3 = (1 + k1) / (1 + k2)
 
----@param lc lc
----@return st
-local function to_ST(lc)
-    local l, c = unpack(lc)
-    return { c / l, c / (1 - l) }
+    return (x ^ 2 + k1 * x) / (k3 * (x + k2))
 end
 
 local M = {}
@@ -380,30 +377,6 @@ local function get_ST_max(a_, b_, cusp)
     return { c / l, c / (1 - l) }
 end
 
--- stylua: ignore
----@param a_ number
----@param b_ number
----@return st
-local function get_ST_mid(a_, b_)
-    local S = 0.11516993 + 1 / (
-        7.44778970 + 4.15901240 * b_
-        + a_ * (-2.19557347 + 1.75198401 * b_
-        + a_ * (-2.13704948 - 10.02301043 * b_
-        + a_ * (-4.24894561 + 5.38770819 * b_ + 4.69891013 * a_
-        )))
-    )
-
-    local T = 0.11239642 + 1 / (
-        1.61320320 - 0.68124379 * b_
-        + a_ * ( 0.40370612 + 0.90148123 * b_
-        + a_ * (-0.27087943 + 0.61223990 * b_
-        + a_ * ( 0.00299215 - 0.45399568 * b_ - 0.14661872 * a_
-        )))
-    )
-
-    return { S, T }
-end
-
 ---@param L number
 ---@param a_ number
 ---@param b_ number
@@ -458,7 +431,7 @@ end
 function M.srgb_to_okhsv(rgb)
     local lab = M.srgb_to_oklab(rgb)
 
-    local C = sqrt(lab[2] * lab[2] + lab[3] * lab[3])
+    local C = sqrt(lab[2] ^ 2 + lab[3] ^ 2)
     local a_ = lab[2] / C
     local b_ = lab[3] / C
 
@@ -525,6 +498,82 @@ function M.okhsv_to_srgb(hsv)
     -- remove to see effect without rescaling
     L = L * scale_L
     C = C * scale_L
+
+    local rgb = M.oklab_to_srgb({ L, C * a_, C * b_ })
+    return rgb
+end
+
+---@param rgb srgb
+---@return hsl
+function M.srgb_to_okhsl(rgb)
+    local lab = M.srgb_to_oklab(rgb)
+
+    local C = sqrt(lab[2] ^ 2 + lab[3] ^ 2)
+    local a_ = lab[2] / C
+    local b_ = lab[3] / C
+
+    local L = lab[1]
+    local h = 0.5 + 0.5 * atan2(-lab[3], -lab[2]) / pi
+
+    local Cs = get_Cs(L, a_, b_)
+    local C_0 = Cs[1]
+    local C_mid = Cs[2]
+    local C_max = Cs[3]
+
+    local s
+    if C < C_mid then
+        local k_0 = 0
+        local k_1 = 0.8 * C_0
+        local k_2 = (1 - k_1 / C_mid)
+
+        local t = (C - k_0) / (k_1 + k_2 * (C - k_0))
+        s = t * 0.8
+    else
+        local k_0 = C_mid
+        local k_1 = 0.2 * C_mid ^ 2 * 1.25 ^ 2 / C_0
+        local k_2 = (1 - k_1 / (C_max - C_mid))
+
+        local t = (C - k_0) / (k_1 + k_2 * (C - k_0))
+        s = 0.8 + 0.2 * t
+    end
+
+    local l = toe(L)
+    return { h, s, l }
+end
+
+---@param hsl hsl
+---@return srgb
+function M.okhsl_to_srgb(hsl)
+    local h, s, l = unpack(hsl)
+    if l == 1 then
+        return { 1, 1, 1 }
+    elseif l == 0 then
+        return { 0, 0, 0 }
+    end
+
+    local a_ = cos(2 * pi * h)
+    local b_ = sin(2 * pi * h)
+    local L = toe_inv(l)
+
+    local Cs = get_Cs(L, a_, b_)
+    local C_0 = Cs[1]
+    local C_mid = Cs[2]
+    local C_max = Cs[3]
+
+    local C, t, k_0, k_1, k_2
+    if s < 0.8 then
+        t = 1.25 * s
+        k_0 = 0
+        k_1 = 0.8 * C_0
+        k_2 = (1 - k_1 / C_mid)
+    else
+        t = 5 * (s - 0.8)
+        k_0 = C_mid
+        k_1 = 0.2 * C_mid ^ 2 * 1.25 ^ 2 / C_0
+        k_2 = (1 - k_1 / (C_max - C_mid))
+    end
+
+    C = k_0 + t * k_1 / (1 - k_2 * t)
 
     local rgb = M.oklab_to_srgb({ L, C * a_, C * b_ })
     return rgb
